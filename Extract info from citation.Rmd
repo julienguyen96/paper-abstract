@@ -1,0 +1,390 @@
+---
+title: "Extracting info from paper citation using stringr and tidytext"
+author: 
+- Julie Nguyen ([Personal website](https://www.jnnguyen.com/), [Email](mailto:nhu.nguyen4@mail.mcgill.ca))
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: flatly
+    code_folding: show
+    toc: true
+    toc_depth: 4
+    # toc_float:
+    #   collapsed: T
+    number_sections: no
+    fig_caption: yes
+    df_print: kable
+subparagraph: yes
+---
+
+<script>
+$(document).ready(function() {
+  $items = $('div#TOC li');
+  $items.each(function(idx) {
+    num_ul = $(this).parentsUntil('#TOC').length;
+    $(this).css({'text-indent': num_ul * 10, 'padding-left': 0});
+  });
+
+});
+</script>
+
+<style type="text/css">
+  body{
+  font-size: 12pt;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+library(knitr) # publish this document
+library(silgelib) # visualize data
+library(ggplot2) # visualize data
+library(dplyr) # manipulate data
+library(tidyr) # tidy data
+library(kableExtra) # create pretty table
+library(stringr) # manipulate text data
+library(tidytext) # manipulate text data
+
+opts_chunk$set(
+  tidy = F, 
+  echo = T, 
+  cache = T, 
+  message = F, 
+  warning = F)
+
+options(knitr.kable.NA = '',
+        width=120, 
+        dplyr.width = 150) 
+
+theme_set(theme_plex())
+```
+
+At some point during a PhD, many PhD students go through an exam called the comprehensive exam (comps for short) to demonstrate their knowledge of their chosen field. At the Organizational Behavior group at McGill University where I am currently doing my PhD, our comprehensive exam is tailored to our own research interests. As such, given that my research draws from two streams of research: novelty reception and social networks and gender, my reading list for the exam includes 100+ research papers that examine one of two questions: 
+
+- What are the factors that facilitate acceptance of novelty?  
+- How do networks affect men's and women's career differently? 
+
+When studying for the exam, I applied Natural Language Processing (NLP) techniques to the paper abstracts to find the overarching themes across the papers. These analyses, in conjunction with reading the papers, help me develop a better understanding of what scientists know so far about novelty reception and about social networks and gender. 
+
+In this post, I walked through the first step to this process - extracting information about the research papers in my reading list using their citation using R packages `tidytext` and `stringr`. This information include the year the paper was published, the authors of the paper, the title of the paper, and the journal it was published in. Please note that the codes I wrote are to extract paper information from APA citation, and they might need to be adjusted for other types of citation.
+
+First, let's read the google sheet I created that contains my reading list and pick 5 random rows to see what the data looks like.
+
+```{r}
+# read google docs file
+gsheet::gsheet2tbl('https://docs.google.com/spreadsheets/d/1ic1Zc3CpXZyiYfD5whrHLizMN83WXyxjipN5moUtVG8/edit#gid=0') -> reading
+
+# read the functions I wrote to create table with scroll box
+source("/Users/mac/Library/CloudStorage/OneDrive-McGillUniversity/Work/Projects/Social cap and gender/Film-maker-network/functions.R")
+
+set.seed(09011996)
+reading %>% 
+  sample_n(5) %>% 
+  kbl_2()
+```
+
+From the table above, we can see that for each paper, we have its citation, its abstract, and whether it is about novelty reception or network and gender (i.e., the two research streams I focus on for my exam). From the paper citation, we can create additional variables about the paper. Let's start with the year the paper was published!
+
+# Publication year 
+
+We can create a variable for publication year by extracting 4-letter words from citation that starts with 2 then 0 (i.e., articles published in the 21st century) or with 1 then 9 (i.e., articles published in the 20th century). 
+
+Once we get that done, we can use publication year to create a variable for the decade the paper was published in. To this end, we divide the year by 10 and return the integer part of the results (i.e., integer division). 
+
+```{r}
+reading %>% 
+  # convert column name to lower case 
+  janitor::clean_names() %>% 
+  mutate(
+    # extract publication year from citation
+    year = str_extract_all(citation, "[2][0][0-9]{2}|[1][9][0-9]{2}", simplify = T)[,1] %>% as.numeric(),
+    # create publication decade from publication year
+    decade = (year %/% 10) * 10, 
+    decade = paste0(decade, "s")) -> reading
+```
+
+Let's see what the data looks like now.
+
+```{r}
+set.seed(09011996)
+reading %>% 
+  sample_n(5) %>% 
+  kbl_2()
+```
+
+Looks like everything is as it should be. Let's see how many papers in my list are published across years.
+
+```{r}
+reading %>% 
+  count(year) %>% 
+  ggplot(aes(year, n)) +
+  geom_col(show.legend = FALSE, fill = "#ca225e") +
+  labs(y = "Number of papers", x = NULL)
+```
+
+It looks like most of the papers on my list were published within the last 10 years. The few papers published before 2000 must be the seminal papers on the topics I study. 
+
+Let's see if the number of papers by year differs across my two comps themes: novelty reception and network and gender.
+
+```{r}
+reading %>% 
+  count(year, topic, sort= T) %>% 
+  ggplot(aes(year, n, fill = topic)) + 
+  geom_col(show.legend = FALSE) +
+  facet_grid(rows = vars(topic)) +
+  scale_fill_manual(values = c("#be1558", "#fbcbc9")) +
+  scale_y_continuous(breaks = scales::pretty_breaks()) +
+  labs(y = "Number of papers", x = NULL)
+```
+
+It seems that the majority of the papers in my list on both novelty reception and network and gender are recent papers published within the last 10 years. 
+
+# Authors
+
+Next, we can create a variable for author names along with the publication year (e.g., Guilbeault, D., & Centola, D. 2021) by extracting all characters from citation that appear before the closing bracket ). 
+
+We can also get the name of first author along with the publication year (e.g., Guilbeault 2021) by extract the first word in the variable we created for authors and merge it with the publication year. 
+
+
+```{r}
+reading %>% 
+  # get author information
+  mutate(authors = str_replace(citation, "\\).*$", ""), 
+         authors = str_replace(authors, "\\(", ""),
+         # get first author information
+         first_author = word(authors, 1),
+         first_author = str_remove_all(first_author, ",")) %>% 
+  # merge first author name with publication year
+  unite(first_author, c("first_author", "year"), sep = " ", remove = F) -> reading
+```
+
+Once we do this, let's see what the data looks like now.
+
+```{r}
+set.seed(09011996)
+reading %>% 
+  sample_n(5) %>% 
+  kbl_2()
+```
+
+# Title
+
+Next, we can extract the title of the paper from its citation. To this end, we extract all strings in citation that appears after the closing bracket (which removes information on author and publication year) and before the period (which removes information on journal and page number).
+
+```{r}
+reading %>% 
+  # extract string after the closing bracket
+  mutate(title = str_extract(citation, "\\).*$") %>% 
+           # remove everything from the beginning until the first white space
+           str_replace("^\\S* ", "") %>%
+           # remove everything starting from the first period
+           str_replace("\\..*$", "")) -> reading
+```
+
+Again, let's see what the data looks like now.
+
+```{r}
+set.seed(09011996)
+reading %>% 
+  sample_n(5) %>% 
+  kbl_2()
+```
+
+# Journal and field
+
+Next, we will create a variable for a short-hand version of the journal names (e.g., AMJ for the Academy of Management journal). To this end, we will use regex to detect certain strings reflecting journal names in the citation (e.g., Academy of Management journal) and assign the paper with the short-hand journal name (e.g., AMJ) in the journal variable. 
+
+```{r}
+reading %>% 
+  mutate(journal = case_when(  
+      str_detect(citation, regex("American Sociological Review", ignore_case = T)) ~ "ASR",
+      str_detect(citation, regex("Academy of Management journal", ignore_case = T)) ~ "AMJ",
+      str_detect(citation, regex("Academy of Management review", ignore_case = T)) ~ "AMR",
+      str_detect(citation, regex("Academy of Management discoveries", ignore_case = T)) ~ "Discoveries",
+      str_detect(citation, regex("Academy of Management Annals", ignore_case = T)) ~ "Annals",
+      str_detect(citation, regex("Academy of Management learning", ignore_case = T)) ~ "Learning",
+      str_detect(citation, regex("Administrative Science Quarterly", ignore_case = T)) ~ "ASQ",
+      str_detect(citation, "Management science") ~ "Management sci",
+      str_detect(citation, regex("American journal of sociology", ignore_case = T)) ~ "AJS",
+      str_detect(citation, "Scientific reports") ~ "Nature",
+      str_detect(citation, regex("nature", ignore_case = T)) ~ "Nature",      
+      str_detect(citation, regex("Social forces", ignore_case = T)) ~ "Soc forces",
+      str_detect(citation, "Entrepreneurship Theory and Practice") ~ "ETP",
+      
+      # Soc net has to be after PSPB, annual review, jom, and Org Science because a few of papers in these journals have the phrase "social networks" in the title. Therefore, we have to categorize papers in PSPB, annual review, jom, and Org Science first, then assign the rest of the papers with the phrase "social networks" in citation to the journal Social Networks
+      str_detect(citation, "Journal of Management") ~ "JoM",
+      str_detect(citation, regex("Organization Science", ignore_case = T)) ~ "Org Sci",
+      
+      str_detect(citation, regex("annual", ignore_case = T)) ~ "Annual review",
+      str_detect(citation, regex("Social Networks", ignore_case = T)) ~ "Soc Net", 
+      str_detect(citation, regex("Social Science Research", ignore_case = T)) ~ "Social science research",
+      
+      str_detect(citation, regex("Journal of experimental social psychology", ignore_case = T)) ~ "JESP",
+      str_detect(citation, "Proceedings of the National Academy of Sciences") ~ "PNAS",
+      str_detect(citation, "Psychological review") ~ "Psyc review",
+      str_detect(citation, "Psychological science") ~ "Psyc science",
+      str_detect(citation, "Strategic Management Journal") ~ "SMJ",
+      str_detect(citation, "Journal of personality and social psychology") ~ "JPSP",
+      str_detect(citation, "Journal of Applied Psychology") ~ "JAP",
+      str_detect(citation, regex("Personality and Social Psychology Bulletin", ignore_case = T)) ~ "PSPB",
+
+      str_detect(citation, regex("Research Policy", ignore_case = T)) ~ "Research policy",
+      str_detect(citation, regex("\\bScience\\b", ignore_case = T)) ~ "Science",
+      str_detect(citation, regex("venturing", ignore_case = T)) ~ "JBV",
+      str_detect(citation, regex("consumer", ignore_case = T)) ~ "Consumer research",
+      str_detect(citation, regex("rationality", ignore_case = T)) ~ "Rationality",
+      str_detect(citation, regex("Social psychology quarterly", ignore_case = T)) ~ "Social psyc quarterly",
+      str_detect(citation, regex("Journal of Political Economy", ignore_case = T)) ~ "Journal of political economy",
+      str_detect(citation, regex("Journal of Small Business Management", ignore_case = T)) ~ "Journal of small business management",
+      TRUE ~ "others"),
+      
+      # manually recode those that are book chapters by assigning papers with the words ugly, speading, and routledge in citation as book chapter
+  journal = case_when( 
+    str_detect(citation, paste(c("ugly", "spreading", "Routledge" ), collapse = '|')) ~ "book chapter",
+    
+    TRUE ~ as.character(journal))) -> reading
+
+```
+
+Next, we can use the journal a paper is published in to create the variable for the field, based on our knowledge of whether a journal belongs to specific field such as psychology or contains research across different fields. 
+
+```{r}
+reading %>% 
+  mutate(field = case_when(
+      # management journals
+      journal == "AMJ" | journal == "Discoveries" | journal == "Annals" | 
+      journal == "AMR" | journal == "Learning" | journal == "ASQ" | journal == "Management sci" | 
+      journal == "JoM" | journal == "Org Sci" | journal == "SMJ" | journal == "Research policy"  ~ "management",
+      
+      # sociology journals
+      journal == "ASR" | journal == "AJS" | journal == "Soc forces" | journal == "Soc Net" | journal == "Rationality" ~ "sociology",
+      
+      # multidisciplinary science journals
+      journal == "Nature" | journal == "PNAS" | journal == "Science" | journal == "Social science research" ~ "multidisciplinary science",
+      
+      # entrepreneurship journals
+      journal == "ETP" | journal == "JBV" | journal == "Journal of small business management" ~ "entrepreneurship",
+      
+      # psychology journals
+      journal == "PSPB" | journal == "JESP" | journal == "Psyc review" | journal == "Psyc science" |
+      journal == "JPSP" | journal == "JAP" | journal == "Social psyc quarterly" | journal == "Consumer research" ~ "psychology",
+      
+      # reviews
+      journal == "Annual review" | journal == "book chapter" ~ "reviews",
+      
+      # economics
+      journal == "Journal of political economy" ~ "economics"
+  )) -> reading
+```
+
+Let's see what the data looks like now.
+
+```{r}
+set.seed(09011996)
+reading %>% 
+  sample_n(5) %>% 
+  kbl_2()
+```
+
+We can graph the number of papers in my list that are published in journals across different fields. 
+
+```{r}
+reading %>% 
+  count(field, sort = T) %>% 
+  ggplot(aes(forcats::fct_reorder(field, n), n, fill = field)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(y = "Number of papers",
+       x = NULL,
+       title = "How many papers were published in field-specific journals?") +
+  theme(plot.title = element_text(size = 13))
+```
+
+Let's see if these numbers differ across two of my comps themes: novelty reception and network and gender.
+
+```{r}
+reading %>% 
+  group_by(topic) %>% 
+  count(field, sort = T) %>% 
+  ungroup()  %>% 
+  mutate(field_1 = field,
+         field = reorder_within(field, n, topic)
+         ) %>% 
+  ggplot(aes(field, n, fill = field_1)) +
+  geom_col(show.legend = FALSE) +
+  scale_x_reordered() +
+  facet_wrap(~ topic, scales = "free_y") +
+  coord_flip() +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(y = "Number of papers",
+       x = NULL,
+       title = "How many papers were published in field-specific journals?") +
+  theme(plot.title = element_text(size = 13))
+```
+
+It seems that I have a lot of papers published in management journals in my reading list, which makes sense since I study how people think and behave at work. Two other types of journals that I also read quite a lot is sociology and psychology journals, although sociology papers here are mostly about network and gender, whereas psychology papers are mostly about novelty reception. 
+
+# Methodology 
+
+Finally, we can categorize a paper by its methodology, specially whether it is a theoretical, empirical, or review paper by the journal it is published in. For example, I know that the papers in my reading list that are published in certain journals such as Academy of Management Annals are review papers, papers published in Academy of Management Review are theory papers, etc. Based on our own knowledge of the journals in the list, we can create a variable for the methodology of each paper.
+
+
+```{r}
+reading %>% 
+  mutate(method = case_when(
+    # review papers
+    journal == "Annals" | journal == "book chapter" | journal == "Annual review" | journal == "JoM" |str_detect(title, 'distinctiveness') ~ "review",
+    
+    # theory papers             
+    journal == "AMR" ~ "theory",
+    
+    # empirical paper            
+    TRUE ~ "empirical")) -> reading
+```
+
+Once, this is done, let's count how many papers in my reading list that are review, theory, and empirical papers.
+
+```{r}
+reading %>% 
+  count(method) %>% 
+  ggplot(aes(forcats::fct_reorder(method, -n), n, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  labs(y = "Number of papers",
+       x = NULL,
+       title = "How many papers are empirical, theory, and review papers?") +
+  scale_fill_manual(values = c("#F9A12EFF", "#FC766AFF", "#9B4A97FF")) +
+  theme(plot.title = element_text(size = 13))
+```
+
+Let's see if this differs across my two comps themes: novelty reception and network and gender. 
+
+```{r}
+reading %>% 
+  group_by(topic) %>% 
+  count(method, sort = T) %>% 
+  ungroup() %>% 
+  mutate(method = reorder(method, -n)) %>%
+  ggplot(aes(method, n, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic) +
+  scale_fill_manual(values = c("#F9A12EFF", "#FC766AFF", "#9B4A97FF")) +
+  labs(x = NULL, 
+       y = "Number of papers",
+       title = "How many papers are theoretical, empirical, and reviews?") 
+```
+
+The graphs show that most of my readings are empirical papers, but theoretical papers are quite rare. This makes sense since I am more interested in data and empirics than theory and this has apparently influenced which papers I chose to read for my research and comprehensive exam. 
+
+Now that we have created additional variables for each paper, we can move on to do interesting text analysis techniques. Before that, let's create a unique ID for each paper and save the data for future analyses.
+
+```{r, eval=FALSE}
+reading %>% mutate(
+  # create id for each paper based on the row number
+  id = row_number()) -> reading
+
+saveRDS(reading, "reading.rds")
+```
+
+
+In future posts, I will demonstrate how we can find the most frequent words or phrases in the paper abstracts, as well as the words that are unique to some group of papers rather than others. In addition, I will show how we can use the unsupervised machine learning technique Topic Modeling to find the common themes across the papers based on the words the authors use in the abstracts. 
